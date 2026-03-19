@@ -45,7 +45,7 @@ pub fn extract_outline(source: &str) -> OutlineResult {
                     let text = use_tree_to_string(&item_use.tree);
                     let (start, end) = span_lines(source, item_use);
                     exports.push(OutlineEntry {
-                        signature: format!("pub use {}", text),
+                        signature: format!("use {}", text),
                         start_line: start,
                         end_line: end,
                     });
@@ -66,13 +66,8 @@ pub fn extract_outline(source: &str) -> OutlineResult {
             }
             Item::Struct(item_struct) => {
                 if is_pub(&item_struct.vis) {
-                    let sig = format_struct_signature(item_struct);
-                    let (start, end) = span_lines(source, item_struct);
-                    exports.push(OutlineEntry {
-                        signature: sig,
-                        start_line: start,
-                        end_line: end,
-                    });
+                    let mut entries = format_struct_entries(source, item_struct, &mut type_refs);
+                    exports.append(&mut entries);
                 }
             }
             Item::Enum(item_enum) => {
@@ -197,10 +192,10 @@ fn source_text_for_span<T: syn::spanned::Spanned>(source: &str, item: &T) -> Str
 }
 
 fn format_fn_signature(item_fn: &ItemFn, type_refs: &mut HashSet<String>) -> String {
-    format_sig(&item_fn.sig, type_refs, true)
+    format_sig(&item_fn.sig, type_refs)
 }
 
-fn format_sig(sig: &Signature, type_refs: &mut HashSet<String>, with_pub: bool) -> String {
+fn format_sig(sig: &Signature, type_refs: &mut HashSet<String>) -> String {
     let async_prefix = if sig.asyncness.is_some() {
         "async "
     } else {
@@ -211,7 +206,6 @@ fn format_sig(sig: &Signature, type_refs: &mut HashSet<String>, with_pub: bool) 
     } else {
         ""
     };
-    let pub_prefix = if with_pub { "pub " } else { "" };
     let name = &sig.ident;
     let generics = format_generics(&sig.generics, type_refs);
     let params = format_fn_params(sig, type_refs);
@@ -219,8 +213,8 @@ fn format_sig(sig: &Signature, type_refs: &mut HashSet<String>, with_pub: bool) 
     let where_clause = format_where_clause(&sig.generics, type_refs);
 
     format!(
-        "{}{}{}fn {}{}({}){}{}",
-        pub_prefix, async_prefix, unsafe_prefix, name, generics, params, ret, where_clause
+        "{}{}fn {}{}({}){}{}",
+        async_prefix, unsafe_prefix, name, generics, params, ret, where_clause
     )
 }
 
@@ -355,14 +349,55 @@ fn collect_type_refs_from_str(s: &str, type_refs: &mut HashSet<String>) {
     }
 }
 
-fn format_struct_signature(item_struct: &ItemStruct) -> String {
+fn format_struct_entries(source: &str, item_struct: &ItemStruct, type_refs: &mut HashSet<String>) -> Vec<OutlineEntry> {
     let derives = extract_derives(&item_struct.attrs);
     let derive_str = if derives.is_empty() {
         String::new()
     } else {
         format!("#[derive({})]\n", derives.join(", "))
     };
-    format!("{}pub struct {}", derive_str, item_struct.ident)
+
+    let (start, end) = span_lines(source, item_struct);
+
+    // Collect pub fields
+    let mut field_entries = Vec::new();
+    if let syn::Fields::Named(ref fields) = item_struct.fields {
+        for field in &fields.named {
+            if is_pub(&field.vis) {
+                if let Some(ref ident) = field.ident {
+                    let ty = format_type(&field.ty, type_refs);
+                    let (f_start, f_end) = span_lines(source, field);
+                    field_entries.push(OutlineEntry {
+                        signature: format!("  {}: {}", ident, ty),
+                        start_line: f_start,
+                        end_line: f_end,
+                    });
+                }
+            }
+        }
+    }
+
+    let mut entries = Vec::new();
+    if field_entries.is_empty() {
+        entries.push(OutlineEntry {
+            signature: format!("{}struct {}", derive_str, item_struct.ident),
+            start_line: start,
+            end_line: end,
+        });
+    } else {
+        entries.push(OutlineEntry {
+            signature: format!("{}struct {} {{", derive_str, item_struct.ident),
+            start_line: start,
+            end_line: end,
+        });
+        entries.append(&mut field_entries);
+        entries.push(OutlineEntry {
+            signature: "}".to_string(),
+            start_line: 0,
+            end_line: 0,
+        });
+    }
+    entries
 }
 
 fn format_enum_signature(item_enum: &ItemEnum) -> String {
@@ -372,7 +407,7 @@ fn format_enum_signature(item_enum: &ItemEnum) -> String {
     } else {
         format!("#[derive({})]\n", derives.join(", "))
     };
-    format!("{}pub enum {}", derive_str, item_enum.ident)
+    format!("{}enum {}", derive_str, item_enum.ident)
 }
 
 fn format_trait_signature(
@@ -386,16 +421,16 @@ fn format_trait_signature(
     let mut methods = Vec::new();
     for trait_item in &item_trait.items {
         if let TraitItem::Fn(method) = trait_item {
-            let sig = format_sig(&method.sig, type_refs, false);
+            let sig = format_sig(&method.sig, type_refs);
             methods.push(sig);
         }
     }
 
     if methods.is_empty() {
-        format!("pub trait {}{}{}", name, generics, where_clause)
+        format!("trait {}{}{}", name, generics, where_clause)
     } else {
         format!(
-            "pub trait {}{}{} {{\n{}\n}}",
+            "trait {}{}{} {{\n{}\n}}",
             name,
             generics,
             where_clause,
@@ -414,7 +449,7 @@ fn format_type_alias_signature(
 ) -> String {
     let name = &item_type.ident;
     let generics = format_generics(&item_type.generics, type_refs);
-    format!("pub type {}{}", name, generics)
+    format!("type {}{}", name, generics)
 }
 
 fn format_const_signature(
@@ -423,7 +458,7 @@ fn format_const_signature(
 ) -> String {
     let name = &item_const.ident;
     let ty = format_type(&item_const.ty, type_refs);
-    format!("pub const {}: {}", name, ty)
+    format!("const {}: {}", name, ty)
 }
 
 fn format_static_signature(
@@ -436,11 +471,11 @@ fn format_static_signature(
         _ => "",
     };
     let ty = format_type(&item_static.ty, type_refs);
-    format!("pub static {}{}: {}", mutability, name, ty)
+    format!("static {}{}: {}", mutability, name, ty)
 }
 
 fn format_mod_signature(item_mod: &ItemMod) -> String {
-    format!("pub mod {}", item_mod.ident)
+    format!("mod {}", item_mod.ident)
 }
 
 fn extract_derives(attrs: &[Attribute]) -> Vec<String> {
@@ -512,7 +547,7 @@ pub fn greet(name: String) -> String {
         assert_eq!(result.exports.len(), 1);
         assert_eq!(
             result.exports[0].signature,
-            "pub fn greet(name: String) -> String"
+            "fn greet(name: String) -> String"
         );
         assert_eq!(result.exports[0].start_line, 2);
         assert_eq!(result.exports[0].end_line, 4);
@@ -539,10 +574,13 @@ pub struct User {
 }
 "#;
         let result = extract_outline(source);
-        assert_eq!(result.exports.len(), 1);
-        assert!(result.exports[0].signature.contains("pub struct User"));
+        // header + 2 pub fields + closing brace = 4 entries
+        assert_eq!(result.exports.len(), 4);
+        assert!(result.exports[0].signature.contains("struct User"));
         assert!(result.exports[0].signature.contains("Debug"));
         assert!(result.exports[0].signature.contains("Clone"));
+        assert!(result.exports[1].signature.contains("name: String"));
+        assert!(result.exports[2].signature.contains("age: u32"));
     }
 
     #[test]
@@ -557,7 +595,7 @@ pub enum Color {
 "#;
         let result = extract_outline(source);
         assert_eq!(result.exports.len(), 1);
-        assert!(result.exports[0].signature.contains("pub enum Color"));
+        assert!(result.exports[0].signature.contains("enum Color"));
         assert!(result.exports[0].signature.contains("Debug"));
     }
 
@@ -571,7 +609,7 @@ pub trait Processor {
 "#;
         let result = extract_outline(source);
         assert_eq!(result.exports.len(), 1);
-        assert!(result.exports[0].signature.contains("pub trait Processor"));
+        assert!(result.exports[0].signature.contains("trait Processor"));
         assert!(result.exports[0].signature.contains("fn process"));
         assert!(result.exports[0].signature.contains("fn reset"));
     }
@@ -583,7 +621,7 @@ pub type Result<T> = std::result::Result<T, MyError>;
 "#;
         let result = extract_outline(source);
         assert_eq!(result.exports.len(), 1);
-        assert!(result.exports[0].signature.contains("pub type Result"));
+        assert!(result.exports[0].signature.contains("type Result"));
     }
 
     #[test]
@@ -595,7 +633,7 @@ pub const MAX_SIZE: usize = 1024;
         assert_eq!(result.exports.len(), 1);
         assert_eq!(
             result.exports[0].signature,
-            "pub const MAX_SIZE: usize"
+            "const MAX_SIZE: usize"
         );
     }
 
@@ -608,7 +646,7 @@ pub static GLOBAL_COUNT: u32 = 0;
         assert_eq!(result.exports.len(), 1);
         assert_eq!(
             result.exports[0].signature,
-            "pub static GLOBAL_COUNT: u32"
+            "static GLOBAL_COUNT: u32"
         );
     }
 
@@ -619,7 +657,7 @@ pub mod utils;
 "#;
         let result = extract_outline(source);
         assert_eq!(result.exports.len(), 1);
-        assert_eq!(result.exports[0].signature, "pub mod utils");
+        assert_eq!(result.exports[0].signature, "mod utils");
     }
 
     #[test]
@@ -629,7 +667,7 @@ pub use crate::types::Config;
 "#;
         let result = extract_outline(source);
         assert_eq!(result.exports.len(), 1);
-        assert!(result.exports[0].signature.contains("pub use"));
+        assert!(result.exports[0].signature.contains("use"));
         assert!(result.exports[0].signature.contains("Config"));
     }
 
@@ -643,7 +681,6 @@ pub async fn fetch_data(url: String) -> Result<Vec<u8>, Error> {
         let result = extract_outline(source);
         assert_eq!(result.exports.len(), 1);
         assert!(result.exports[0].signature.contains("async"));
-        assert!(result.exports[0].signature.contains("pub"));
         assert!(result.exports[0].signature.contains("fetch_data"));
     }
 
