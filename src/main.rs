@@ -25,8 +25,12 @@ fn main() {
     }
 
     for entry in &result.exports {
-        for line in entry.signature.lines() {
-            println!("{} // L{}-L{}", line, entry.start_line, entry.end_line);
+        let mut lines = entry.signature.lines();
+        if let Some(first) = lines.next() {
+            println!("{} // L{}-L{}", first, entry.start_line, entry.end_line);
+            for line in lines {
+                println!("{}", line);
+            }
         }
     }
 }
