@@ -1,19 +1,10 @@
-use clap::Parser;
 use zat_rust_viewer::extract_outline;
-use std::fs;
-
-#[derive(Parser)]
-#[command(name = "zat-rust-viewer")]
-#[command(about = "Rust source outline viewer for zat")]
-struct Args {
-    /// File path
-    file: String,
-}
+use std::io::{self, Read};
 
 fn main() {
-    let args = Args::parse();
+    let mut content = String::new();
+    io::stdin().read_to_string(&mut content).expect("Failed to read stdin");
 
-    let content = fs::read_to_string(&args.file).expect("Failed to read file");
     let result = extract_outline(&content);
 
     for import in &result.imports {
