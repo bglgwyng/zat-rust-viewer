@@ -72,13 +72,8 @@ pub fn extract_outline(source: &str) -> OutlineResult {
             }
             Item::Enum(item_enum) => {
                 if is_pub(&item_enum.vis) {
-                    let sig = format_enum_signature(item_enum);
-                    let (start, end) = span_lines(source, item_enum);
-                    exports.push(OutlineEntry {
-                        signature: sig,
-                        start_line: start,
-                        end_line: end,
-                    });
+                    let mut entries = format_enum_entries(source, item_enum, &mut type_refs);
+                    exports.append(&mut entries);
                 }
             }
             Item::Trait(item_trait) => {
@@ -400,14 +395,56 @@ fn format_struct_entries(source: &str, item_struct: &ItemStruct, type_refs: &mut
     entries
 }
 
-fn format_enum_signature(item_enum: &ItemEnum) -> String {
+fn format_enum_entries(source: &str, item_enum: &ItemEnum, type_refs: &mut HashSet<String>) -> Vec<OutlineEntry> {
     let derives = extract_derives(&item_enum.attrs);
     let derive_str = if derives.is_empty() {
         String::new()
     } else {
         format!("#[derive({})]\n", derives.join(", "))
     };
-    format!("{}enum {}", derive_str, item_enum.ident)
+    let (start, end) = span_lines(source, item_enum);
+
+    let mut entries = Vec::new();
+    entries.push(OutlineEntry {
+        signature: format!("{}enum {} {{", derive_str, item_enum.ident),
+        start_line: start,
+        end_line: end,
+    });
+
+    for variant in &item_enum.variants {
+        let name = &variant.ident;
+        let fields_str = match &variant.fields {
+            syn::Fields::Unit => String::new(),
+            syn::Fields::Unnamed(fields) => {
+                let types: Vec<String> = fields.unnamed.iter()
+                    .map(|f| format_type(&f.ty, type_refs))
+                    .collect();
+                format!("({})", types.join(", "))
+            }
+            syn::Fields::Named(fields) => {
+                let members: Vec<String> = fields.named.iter()
+                    .map(|f| {
+                        let ty = format_type(&f.ty, type_refs);
+                        format!("{}: {}", f.ident.as_ref().unwrap(), ty)
+                    })
+                    .collect();
+                format!(" {{ {} }}", members.join(", "))
+            }
+        };
+        entries.push(OutlineEntry {
+            signature: format!("  {}{}", name, fields_str),
+            start_line: 0,
+            end_line: 0,
+        });
+    }
+
+    entries.push(OutlineEntry {
+        signature: "}".to_string(),
+        start_line: 0,
+        end_line: 0,
+    });
+
+    entries
 }
 
 fn format_trait_signature(
@@ -594,9 +631,13 @@ pub enum Color {
 }
 "#;
         let result = extract_outline(source);
-        assert_eq!(result.exports.len(), 1);
-        assert!(result.exports[0].signature.contains("enum Color"));
-        assert!(result.exports[0].signature.contains("Debug"));
+        assert_eq!(result.exports.len(), 5);
+        assert!(result.exports[0].signature.contains("#[derive(Debug)]"));
+        assert!(result.exports[0].signature.contains("enum Color {"));
+        assert_eq!(result.exports[1].signature, "  Red");
+        assert_eq!(result.exports[2].signature, "  Green");
+        assert_eq!(result.exports[3].signature, "  Blue");
+        assert_eq!(result.exports[4].signature, "}");
     }
 
     #[test]
